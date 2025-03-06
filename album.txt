@@ -1,0 +1,10 @@
+[artist]
+Maggie
+
+[album]
+Ghost
+
+[tracklist]
+All Mine
+James Was Here
+You and Me

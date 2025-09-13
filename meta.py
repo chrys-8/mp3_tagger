@@ -5,11 +5,20 @@ from pathlib import Path
 
 import random
 
+TrackType = str|None
+MatchType = tuple[int,int]
+
 @dataclass
 class AlbumMetadata:
     artist: str
     album: str
     tracklist: list[str]
+
+@dataclass
+class FileChanges:
+    path: Path
+    track: TrackType = None
+    match: tuple[int,int] = (0,0)
 
 class AlbumMetadataError(Exception):
     pass
@@ -19,8 +28,6 @@ class UserQuit(Exception):
 
 class UserSkip(Exception):
     pass
-
-FileChangesType = list[tuple[Path,str|None]]
 
 def removeBOM(line: str) -> str:
     ''' Remove BOM at beginning of file'''
@@ -88,36 +95,48 @@ def lowercaseSkippedString(string: str) -> str:
     unskippable = lambda ch: not isSkippableChar(ch)
     return ''.join(filter(unskippable, string.lower()))
 
-def matchStrings(string: str, pattern: str) -> int:
+def makeSkippedStringMap(string: str) -> list[int]:
+    '''Make a map for converting skipped string indices to original string indices'''
+    return [idx for idx,ch in enumerate(string) if not isSkippableChar(ch)]
+
+def matchStrings(string: str, pattern: str) -> MatchType:
     '''Yield longest match between string and pattern'''
     assert len(string) > 0
     assert len(pattern) > 0
 
-    # heuristics
     if len(pattern) > len(string):
-        return 0
+        return 0,0
 
     # using pattern as sliding window
     for offset in range(len(string) - len(pattern) + 1):
         windowedString = string[offset:offset + len(pattern)]
         if windowedString == pattern:
-            return len(pattern)
+            return offset,len(pattern)
 
-    return 0
+    return 0,0
 
-def identifyTrackFromFilePath(path: Path, tracklist: list[str]) -> str|None:
+def identifyTrackFromFilePath(path: Path, tracklist: list[str]) -> tuple[TrackType,int,int]:
     '''Identify which track in the tracklist corresponds with the file'''
-    bestMatch: str|None = None
+    bestMatch: TrackType = None
+    bestMatchStart = 0
     bestMatchLength = 0
     file = lowercaseSkippedString(path.stem)
     for trackTitle in tracklist:
         track = lowercaseSkippedString(trackTitle)
-        matchLength = matchStrings(file, track)
+        matchStart,matchLength = matchStrings(file, track)
         if matchLength > bestMatchLength:
             bestMatch = trackTitle
+            bestMatchStart = matchStart
             bestMatchLength = matchLength
 
-    return bestMatch
+    return bestMatch,bestMatchStart,bestMatchLength
+
+def splitMatchedString(string: str, matchStart: int, matchLength: int) -> tuple[str,str,str]:
+    '''Split string into pre-,matched,post-matched for match against skipped string'''
+    indexMap = makeSkippedStringMap(string)
+    start = indexMap[matchStart]
+    end = indexMap[matchStart + matchLength - 1] + 1
+    return string[:start],string[start:end],string[end:]
 
 ESCAPE = "\x1b"
 FG_DEFAULT = ESCAPE + "[39m"
@@ -128,21 +147,31 @@ FG_BLUE = ESCAPE + "[34m"
 FG_MAGENTA = ESCAPE + "[35m"
 FG_CYAN = ESCAPE + "[36m"
 
-def printFileChange(path: Path, track: str|None):
+def printFileChange(changes: FileChanges):
     '''Prints out changes to a file'''
-    if track is None:
-        print(f"{FG_YELLOW}{path.stem} will remain unchanged{FG_DEFAULT}")
-#        print(f"{path.stem} will remain unchanged")
+    if changes.track is None:
+        START = FG_YELLOW
+        END = FG_DEFAULT
+        print(f"{START}'{changes.path.name}' will remain unchanged{END}")
+#        print(f"{path.name} will remain unchanged")
+    elif changes.match != (0,0):
+        START = FG_CYAN
+        END = FG_DEFAULT
+        matchStart,matchLength = changes.match
+        pre,match,post = splitMatchedString(changes.path.name, matchStart, matchLength)
+        print(f"{pre}{START}{match}{END}{post} -> {START}{changes.track}{END}")
+#        print(f"{path.name} -> {track}")
     else:
-        print(f"{FG_CYAN}{path.stem}{FG_DEFAULT} -> {FG_CYAN}{track}{FG_DEFAULT}")
-#        print(f"{path.stem} -> {track}")
+        START = FG_CYAN
+        END = FG_DEFAULT
+        print(f"{START}{changes.path.name}{END} -> {START}{changes.track}{END}")
+#        print(f"{path.name} -> {track}")
 
-def printFileChangesSummary(fileChanges: FileChangesType):
+def printFileChangesSummary(fileChanges: list[FileChanges]):
     '''Prints out summary of changes to be made'''
     for idx,change in enumerate(fileChanges):
-        path,track = change
         print(f"{idx + 1} - ", end = '')
-        printFileChange(path, track)
+        printFileChange(change)
 
 QUIT = 'q'
 SKIP = 's'
@@ -175,16 +204,20 @@ def promptBoundedInteger(prompt: str, bounds: tuple[int,int], signal = QUIT) -> 
 PROMPT_TRACK_SELECT = "Select the track number ('q' quits): "
 PROMPT_TRACK_SELECT_EXTRA = "Enter number of any selection you want to change: (empty skips, 'q' quits) "
 
-def promptTrackSelect(tracklist: list[str]) -> str:
+def promptTrackSelect(tracklist: list[str]) -> TrackType:
     '''Prompt user to select track from tracklist'''
+    print("0 - <remove track title>")
     for idx,track in enumerate(tracklist):
         print(f"{idx + 1} - {track}")
 
     print()
-    choice = promptBoundedInteger(PROMPT_TRACK_SELECT, bounds = (1,len(tracklist)))
-    return choice - 1
+    choice = promptBoundedInteger(PROMPT_TRACK_SELECT, bounds = (0,len(tracklist)))
+    if choice == 0:
+        return None
+    else:
+        return tracklist[choice - 1]
 
-def promptChanges(fileChanges: FileChangesType, tracklist: list[str]) -> FileChangesType:
+def promptChanges(fileChanges: list[FileChanges], tracklist: list[str]) -> list[FileChanges]:
     '''Prompt user for additional changes'''
     while True:
         try:
@@ -193,25 +226,31 @@ def promptChanges(fileChanges: FileChangesType, tracklist: list[str]) -> FileCha
             print()
             choice = promptBoundedInteger(PROMPT_TRACK_SELECT_EXTRA, bounds=(1,len(fileChanges)), signal = QUIT_SKIP)
 
-            path,track = fileChanges[choice - 1]
-            printFileChange(path, track)
-            newTrack = tracklist[promptTrackSelect(tracklist)]
-            printFileChange(path, newTrack)
-            fileChanges[choice - 1] = (path,newTrack)
+            changes = fileChanges[choice - 1]
+            printFileChange(changes)
+
+            newTrack = promptTrackSelect(tracklist)
+            changes.track = newTrack
+            changes.match = (0,0)
+            printFileChange(changes)
 
         except UserSkip:
             return fileChanges
 
-def saveChanges(fileChanges: FileChangesType, album: AlbumMetadata):
+def saveChanges(fileChanges: list[FileChanges], album: AlbumMetadata):
     '''Save file changes to the filesystem'''
-    for path,track in fileChanges:
-        audio = EasyID3(path)
-        audio["artist"] = album.artist
-        audio["albumartist"] = album.artist
-        audio["album"] = album.album
-        audio["title"] = track
-        audio["tracknumber"] = str(album.tracklist.index(track) + 1)
-        audio.save()
+    for changes in fileChanges:
+        path = changes.path
+        track = changes.track
+        if track is not None:
+            audio = EasyID3(path)
+            audio["artist"] = album.artist
+            audio["albumartist"] = album.artist
+            audio["album"] = album.album
+            track = changes.track
+            audio["title"] = track
+            audio["tracknumber"] = str(album.tracklist.index(track) + 1)
+            audio.save()
 
 def thankyou() -> str:
     '''Say thank you'''
@@ -220,7 +259,7 @@ def thankyou() -> str:
               "Good-bye!",
               "Thanks for using my script!",
               "Until next time!",
-              "See you soon!"
+              "See you soon!",
               ]
 
     return random.choice(THANKS)
@@ -246,10 +285,10 @@ def main():
 
     audioPaths = Path(".").glob("*.mp3")
 
-    fileChanges: FileChangesType = []
+    fileChanges: list[FileChanges] = []
     for path in audioPaths:
-        trackTitle: str|None = identifyTrackFromFilePath(path, album.tracklist)
-        fileChanges.append((path,trackTitle))
+        trackTitle,matchStart,matchLength = identifyTrackFromFilePath(path, album.tracklist)
+        fileChanges.append(FileChanges(path,trackTitle,(matchStart,matchLength)))
 
     try:
         promptChanges(fileChanges, album.tracklist)

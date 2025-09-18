@@ -86,9 +86,11 @@ def parseAlbumDataTable(data: dict[str,list[str]]) -> AlbumMetadata:
             data[ALBUM_HEADER][0],
             data[TRACKLIST_HEADER])
 
+SKIPPABLE_CHARS = '()[]{}-_'
+
 def isSkippableChar(ch: str) -> bool:
     '''Is character considered skippable'''
-    return ch.isspace() or ch in '()[]{}'
+    return ch.isspace() or ch in SKIPPABLE_CHARS
 
 def lowercaseSkippedString(string: str) -> str:
     '''Convert string to lowercase and skipped skippabled characters'''

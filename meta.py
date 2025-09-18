@@ -338,8 +338,13 @@ def main():
         print("No changes were made to the files.")
         return
 
-    saveChanges(fileChanges, album)
-    print("Changes saved to files!")
+    actualChanges = [change for change in fileChanges if change.track is not None]
+    if len(actualChanges) == 0:
+        print("No changes were made to the files")
+    else:
+        saveChanges(actualChanges, album)
+        print("Changes saved to files!")
+
     print(thankyou())
 
 if __name__ == "__main__":

@@ -26,7 +26,10 @@ class AlbumMetadataError(Exception):
 class UserQuit(Exception):
     pass
 
-class UserSkip(Exception):
+class UserCancel(Exception):
+    pass
+
+class UserDone(Exception):
     pass
 
 def removeBOM(line: str) -> str:
@@ -176,18 +179,49 @@ def printFileChangesSummary(fileChanges: list[FileChanges]):
         printFileChange(change)
 
 QUIT = 'q'
-SKIP = 's'
-QUIT_SKIP = 'qs'
+CANCEL = 's'
+DONE = 'd'
 
-def promptBoundedInteger(prompt: str, bounds: tuple[int,int], signal = QUIT) -> int:
+QUIT_CANCEL = QUIT + CANCEL
+QUIT_DONE = QUIT + DONE
+
+QUIT_PROMPT_HINT = "'q' quits"
+CANCEL_PROMPT_HINT = "return cancels"
+DONE_PROMPT_HINT = "return finishes"
+
+def addSignalHintsToPrompt(prompt: str, signal: str) -> str:
+    '''Format prompt with signal hints'''
+    hints = []
+    if CANCEL in signal:
+        hints.append(CANCEL_PROMPT_HINT)
+    if DONE in signal:
+        hints.append(DONE_PROMPT_HINT)
+    if QUIT in signal:
+        hints.append(QUIT_PROMPT_HINT)
+
+    if len(hints) == 0:
+        return prompt.format(hints = "")
+    else:
+        return prompt + f" ({', '.join(hints)}) "
+
+def addPromptPadding(prompt: str) -> str:
+    '''Add padding to the end of a prompt string'''
+    return prompt + ' ' if prompt[-1] != ' ' else prompt
+
+def promptBoundedInteger(prompt: str, bounds: tuple[int,int], signal: str) -> int:
     '''Prompt user for bounded integer input or quit'''
     lower,upper = bounds
     choice: int|None = None
+    prompt = addSignalHintsToPrompt(prompt, signal)
+    prompt = addPromptPadding(prompt)
     while choice is None:
         print(prompt, end = '')
         response = input()
-        if response == '' and SKIP in signal:
-            raise UserSkip
+        if response == '' and CANCEL in signal:
+            raise UserCancel
+
+        if response == '' and DONE in signal:
+            raise UserDone
 
         if response.lower() == 'q' and QUIT in signal:
             raise UserQuit
@@ -203,8 +237,8 @@ def promptBoundedInteger(prompt: str, bounds: tuple[int,int], signal = QUIT) -> 
 
     return choice
 
-PROMPT_TRACK_SELECT = "Select the track number ('q' quits): "
-PROMPT_TRACK_SELECT_EXTRA = "Enter number of any selection you want to change: (empty skips, 'q' quits) "
+PROMPT_SELECT_NEW_TRACK = "Select the new track number:"
+PROMPT_SELECT_TRACK_CHANGE = "Enter number of any selection you want to change:"
 
 def promptTrackSelect(tracklist: list[str]) -> TrackType:
     '''Prompt user to select track from tracklist'''
@@ -213,7 +247,7 @@ def promptTrackSelect(tracklist: list[str]) -> TrackType:
         print(f"{idx + 1} - {track}")
 
     print()
-    choice = promptBoundedInteger(PROMPT_TRACK_SELECT, bounds = (0,len(tracklist)))
+    choice = promptBoundedInteger(PROMPT_SELECT_NEW_TRACK, bounds = (0,len(tracklist)), signal = QUIT_CANCEL)
     if choice == 0:
         return None
     else:
@@ -226,7 +260,7 @@ def promptChanges(fileChanges: list[FileChanges], tracklist: list[str]) -> list[
             print()
             printFileChangesSummary(fileChanges)
             print()
-            choice = promptBoundedInteger(PROMPT_TRACK_SELECT_EXTRA, bounds=(1,len(fileChanges)), signal = QUIT_SKIP)
+            choice = promptBoundedInteger(PROMPT_SELECT_TRACK_CHANGE, bounds=(1,len(fileChanges)), signal = QUIT_DONE)
 
             changes = fileChanges[choice - 1]
             printFileChange(changes)
@@ -236,7 +270,11 @@ def promptChanges(fileChanges: list[FileChanges], tracklist: list[str]) -> list[
             changes.match = (0,0)
             printFileChange(changes)
 
-        except UserSkip:
+        except UserCancel:
+            print("Cancelled new track selection")
+            continue
+
+        except UserDone:
             return fileChanges
 
 def saveChanges(fileChanges: list[FileChanges], album: AlbumMetadata):

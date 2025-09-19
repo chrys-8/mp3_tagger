@@ -31,7 +31,7 @@ NO_MATCH = Match(0, 0)
 @dataclass
 class PathTitleMatch:
     path: Path
-    match: Match = field(default_factory = Match)
+    match: Match
     title: str = ""
 
     def __bool__(self):
@@ -150,21 +150,45 @@ def identifyTrackFromFilePath(path: Path, tracklist: list[str]) -> tuple[str|Non
     bestTitleGuess: str|None = None
     bestMatch = NO_MATCH
     file = lowercaseSkippedString(path.stem)
-    for trackTitle in tracklist:
-        track = lowercaseSkippedString(trackTitle)
-        match = matchStrings(file, track)
-        if match.length > bestMatch.length:
-            bestTitleGuess = trackTitle
+    for title in tracklist:
+        skippedTitle = lowercaseSkippedString(title)
+        match = matchStrings(file, skippedTitle)
+        if match == NO_MATCH:
+            continue
+
+        if match.length > bestMatch.length and len(match.misses) <= len(bestMatch.misses):
+            bestTitleGuess = title
             bestMatch = match
+            continue
+
+        if len(match.misses) < len(bestMatch.misses):
+            bestTitleGuess = title
+            bestMatch = match
+            continue
+
+        if bestMatch == NO_MATCH:
+            bestTitleGuess = title
+            bestMatch = match
+            continue
 
     return bestTitleGuess,bestMatch
 
-def splitMatchedString(string: str, matchStart: int, matchLength: int) -> tuple[str,str,str]:
-    '''Split string into pre-,matched,post-matched for match against skipped string'''
+def formatPartiallyMatchedString(string: str, match: Match, START: str, SKIP: str, END: str) -> str:
+    '''Format partially matched string with highlight codes'''
     indexMap = makeSkippedStringMap(string)
-    start = indexMap[matchStart]
-    end = indexMap[matchStart + matchLength - 1] + 1
-    return string[:start],string[start:end],string[end:]
+    start = indexMap[match.start]
+    end = indexMap[match.start + match.length - 1] + 1
+    skips = [indexMap[idx] for idx in match.misses]
+
+    # add format tokens in reverse order to preserve indices
+    tokens = list(string)
+    tokens.insert(end, END)
+    for skip in reversed(skips):
+        tokens.insert(skip + 1, START)
+        tokens.insert(skip, SKIP)
+
+    tokens.insert(start, START)
+    return ''.join(tokens)
 
 ESCAPE = "\x1b"
 FG_DEFAULT = ESCAPE + "[39m"
@@ -175,28 +199,35 @@ FG_BLUE = ESCAPE + "[34m"
 FG_MAGENTA = ESCAPE + "[35m"
 FG_CYAN = ESCAPE + "[36m"
 
-def displayPathTitleMatch(pathMatch: PathTitleMatch):
+def displayPathTitleMatch(pathMatch: PathTitleMatch) -> None:
     '''Display path and matching title'''
-    if not pathMatch:
-        START = FG_YELLOW
-        END = FG_DEFAULT
-        print(f"{START}'{pathMatch.path.name}' will remain unchanged{END}")
-    elif pathMatch.match != USER_DEF_MATCH:
+    if pathMatch.match == USER_DEF_MATCH:
         START = FG_CYAN
         END = FG_DEFAULT
-        pre,match,post = splitMatchedString(pathMatch.path.name, pathMatch.match.start, pathMatch.match.length)
-        print(f"{pre}{START}{match}{END}{post} -> {START}{pathMatch.title}{END}")
-    else:
-        START = FG_CYAN
-        END = FG_DEFAULT
-        print(f"{START}{pathMatch.path.name}{END} -> {START}{pathMatch.title}{END}")
+        print(f"{START}{pathMatch.path.name} -> {pathMatch.title}{END}")
+        return
 
-def displayMatchSummary(pathTitleMatches: list[PathTitleMatch]):
+    if pathMatch:
+        START = FG_CYAN
+        SKIP = FG_RED
+        END = FG_DEFAULT
+        filename = formatPartiallyMatchedString(
+                pathMatch.path.name, pathMatch.match, START = START, SKIP = SKIP, END = END)
+        print(f"{filename} -> {START}{pathMatch.title}{END}")
+        return
+
+    START = FG_YELLOW
+    END = FG_DEFAULT
+    print(f"{START}'{pathMatch.path.name}' will remain unchanged{END}")
+    return
+
+def displayMatchSummary(pathTitleMatches: list[PathTitleMatch]) -> None:
     '''Display summary of which paths were matched to which titles'''
     for idx,change in enumerate(pathTitleMatches):
         print(f"{idx + 1} - ", end = '')
         displayPathTitleMatch(change)
 
+# signals
 QUIT = 'q'
 CANCEL = 's'
 DONE = 'd'
@@ -371,7 +402,7 @@ def main():
         pathTitleMatches.append(
                 PathTitleMatch(path, match, title)
                 if title is not None
-                else PathTitleMatch(path))
+                else PathTitleMatch(path, NO_MATCH))
 
     try:
         promptChanges(pathTitleMatches, album.tracklist)

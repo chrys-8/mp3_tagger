@@ -1,12 +1,9 @@
 from argparse import ArgumentParser
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from mutagen.easyid3 import EasyID3
 from pathlib import Path
 
 import random
-
-TrackType = str|None
-MatchType = tuple[int,int]
 
 @dataclass
 class AlbumMetadata:
@@ -290,7 +287,7 @@ def promptBoundedInteger(prompt: str, bounds: tuple[int,int], signal: str) -> in
 PROMPT_SELECT_NEW_TRACK = "Select the new track number:"
 PROMPT_SELECT_TRACK_CHANGE = "Enter number of any selection you want to change:"
 
-def promptTrackSelect(tracklist: list[str]) -> TrackType:
+def promptTrackSelect(tracklist: list[str]) -> str|None:
     '''Prompt user to select track from tracklist'''
     print("0 - <remove track title>")
     for idx,track in enumerate(tracklist):
@@ -333,7 +330,6 @@ def trackMetadata(pathMatch: PathTitleMatch, album: AlbumMetadata) -> dict[str,s
         return {}
 
     return {
-            "path" : pathMatch.path,
             "artist" : album.artist,
             "albumartist" : album.artist,
             "album" : album.album,
@@ -341,17 +337,13 @@ def trackMetadata(pathMatch: PathTitleMatch, album: AlbumMetadata) -> dict[str,s
             "tracknumber" : str(album.tracklist.index(pathMatch.title) + 1),
             }
 
-def writeMetadata(metadata: dict[str,str]) -> None:
+def writeMetadata(path: Path, metadata: dict[str,str]) -> None:
     '''Write metadata from dict to file'''
-    path = metadata.get("path")
     artist = metadata.get("artist")
     albumartist = metadata.get("albumartist")
     album = metadata.get("album")
     title = metadata.get("title")
     tracknumber = metadata.get("tracknumber")
-
-    if path is None:
-        return
 
     audio = EasyID3(path)
     if artist is not None:
@@ -383,8 +375,6 @@ argParser = ArgumentParser(prog = "Album Metadatiser", description = "Put the me
 argParser.add_argument("input", type = Path)
 
 def main():
-    # NOTICE REMOVE WHEN FIXED
-    print("Notice: title highlighting may not work as intended")
     args = argParser.parse_args()
     albumDataPath: Path = args.input
 
@@ -417,20 +407,20 @@ def main():
         print("No changes were made to the files.")
         return
 
-    fnTrackMeta = lambda ptm: trackMetadata(ptm, album)
-    tracksMetadata = [metadata
-                      for metadata in map(fnTrackMeta, pathTitleMatches)
-                      if metadata is not None]
+    changesWereMade = False
+    for ptm in pathTitleMatches:
+        if not ptm:
+            continue
 
-    if len(tracksMetadata) == 0:
+        metadata = trackMetadata(ptm, album)
+        writeMetadata(ptm.path, metadata)
+        changesWereMade = True
+
+    if changesWereMade:
+        print("Changes saved to files!")
+    else:
         print("No changes were made to the files")
-        print(thankyou())
-        return
 
-    for metadata in tracksMetadata:
-        writeMetadata(metadata)
-
-    print("Changes saved to files!")
     print(thankyou())
 
 if __name__ == "__main__":

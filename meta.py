@@ -327,12 +327,13 @@ def promptChanges(pathTitleMatches: list[PathTitleMatch], tracklist: list[str]) 
         except UserDone:
             return pathTitleMatches
 
-def maybeTrackMetadata(pathMatch: PathTitleMatch, album: AlbumMetadata) -> dict[str,str]|None:
-    '''Determine metadata for a track, if any'''
+def trackMetadata(pathMatch: PathTitleMatch, album: AlbumMetadata) -> dict[str,str]:
+    '''Determine metadata for a track'''
     if not pathMatch:
-        return None
+        return {}
 
     return {
+            "path" : pathMatch.path,
             "artist" : album.artist,
             "albumartist" : album.artist,
             "album" : album.album,
@@ -340,13 +341,17 @@ def maybeTrackMetadata(pathMatch: PathTitleMatch, album: AlbumMetadata) -> dict[
             "tracknumber" : str(album.tracklist.index(pathMatch.title) + 1),
             }
 
-def writeMetadata(path: Path, metadata: dict[str,str]) -> None:
+def writeMetadata(metadata: dict[str,str]) -> None:
     '''Write metadata from dict to file'''
+    path = metadata.get("path")
     artist = metadata.get("artist")
     albumartist = metadata.get("albumartist")
     album = metadata.get("album")
     title = metadata.get("title")
     tracknumber = metadata.get("tracknumber")
+
+    if path is None:
+        return
 
     audio = EasyID3(path)
     if artist is not None:
@@ -412,7 +417,7 @@ def main():
         print("No changes were made to the files.")
         return
 
-    fnTrackMeta = lambda ptm: maybeTrackMetadata(ptm, album)
+    fnTrackMeta = lambda ptm: trackMetadata(ptm, album)
     tracksMetadata = [metadata
                       for metadata in map(fnTrackMeta, pathTitleMatches)
                       if metadata is not None]

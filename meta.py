@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from mutagen.easyid3 import EasyID3
 from pathlib import Path
 
@@ -14,11 +14,29 @@ class AlbumMetadata:
     album: str
     tracklist: list[str]
 
+MAX_NUMBER_OF_MISSES = 2
+
 @dataclass
-class FileChanges:
+class Match:
+    start: int
+    length: int
+    misses: tuple[int,...] = tuple()
+
+    def __eq__(self, other):
+        return self.start == other.start and self.length == other.length
+
+USER_DEF_MATCH = Match(-1, -1)
+NO_MATCH = Match(0, 0)
+
+@dataclass
+class PathTitleMatch:
     path: Path
-    track: TrackType = None
-    match: tuple[int,int] = (0,0)
+    match: Match = field(default_factory = Match)
+    title: str = ""
+
+    def __bool__(self):
+        '''Object is True if title is given, else False'''
+        return len(self.title) != 0
 
 class AlbumMetadataError(Exception):
     pass
@@ -104,37 +122,42 @@ def makeSkippedStringMap(string: str) -> list[int]:
     '''Make a map for converting skipped string indices to original string indices'''
     return [idx for idx,ch in enumerate(string) if not isSkippableChar(ch)]
 
-def matchStrings(string: str, pattern: str) -> MatchType:
+def findMismatchedCharIndices(a: str, b: str) -> list[int]:
+    '''Find list of indices of mismatched characters in two equal-length strings'''
+    assert len(a) == len(b)
+    return [index for index,ch in enumerate(a) if ch != b[index]]
+
+def matchStrings(string: str, pattern: str) -> Match:
     '''Yield longest match between string and pattern'''
     assert len(string) > 0
     assert len(pattern) > 0
 
     if len(pattern) > len(string):
-        return 0,0
+        return NO_MATCH
 
     # using pattern as sliding window
     for offset in range(len(string) - len(pattern) + 1):
         windowedString = string[offset:offset + len(pattern)]
-        if windowedString == pattern:
-            return offset,len(pattern)
+        mismatchedCharIdxs = findMismatchedCharIndices(windowedString, pattern)
+        if len(mismatchedCharIdxs) <= MAX_NUMBER_OF_MISSES:
+            correctedIdxs = tuple(idx + offset for idx in mismatchedCharIdxs)
+            return Match(offset,len(pattern),correctedIdxs)
 
-    return 0,0
+    return NO_MATCH
 
-def identifyTrackFromFilePath(path: Path, tracklist: list[str]) -> tuple[TrackType,int,int]:
+def identifyTrackFromFilePath(path: Path, tracklist: list[str]) -> tuple[str|None,Match]:
     '''Identify which track in the tracklist corresponds with the file'''
-    bestMatch: TrackType = None
-    bestMatchStart = 0
-    bestMatchLength = 0
+    bestTitleGuess: str|None = None
+    bestMatch = NO_MATCH
     file = lowercaseSkippedString(path.stem)
     for trackTitle in tracklist:
         track = lowercaseSkippedString(trackTitle)
-        matchStart,matchLength = matchStrings(file, track)
-        if matchLength > bestMatchLength:
-            bestMatch = trackTitle
-            bestMatchStart = matchStart
-            bestMatchLength = matchLength
+        match = matchStrings(file, track)
+        if match.length > bestMatch.length:
+            bestTitleGuess = trackTitle
+            bestMatch = match
 
-    return bestMatch,bestMatchStart,bestMatchLength
+    return bestTitleGuess,bestMatch
 
 def splitMatchedString(string: str, matchStart: int, matchLength: int) -> tuple[str,str,str]:
     '''Split string into pre-,matched,post-matched for match against skipped string'''
@@ -152,31 +175,27 @@ FG_BLUE = ESCAPE + "[34m"
 FG_MAGENTA = ESCAPE + "[35m"
 FG_CYAN = ESCAPE + "[36m"
 
-def printFileChange(changes: FileChanges):
-    '''Prints out changes to a file'''
-    if changes.track is None:
+def displayPathTitleMatch(pathMatch: PathTitleMatch):
+    '''Display path and matching title'''
+    if not pathMatch:
         START = FG_YELLOW
         END = FG_DEFAULT
-        print(f"{START}'{changes.path.name}' will remain unchanged{END}")
-#        print(f"{path.name} will remain unchanged")
-    elif changes.match != (0,0):
+        print(f"{START}'{pathMatch.path.name}' will remain unchanged{END}")
+    elif pathMatch.match != USER_DEF_MATCH:
         START = FG_CYAN
         END = FG_DEFAULT
-        matchStart,matchLength = changes.match
-        pre,match,post = splitMatchedString(changes.path.name, matchStart, matchLength)
-        print(f"{pre}{START}{match}{END}{post} -> {START}{changes.track}{END}")
-#        print(f"{path.name} -> {track}")
+        pre,match,post = splitMatchedString(pathMatch.path.name, pathMatch.match.start, pathMatch.match.length)
+        print(f"{pre}{START}{match}{END}{post} -> {START}{pathMatch.title}{END}")
     else:
         START = FG_CYAN
         END = FG_DEFAULT
-        print(f"{START}{changes.path.name}{END} -> {START}{changes.track}{END}")
-#        print(f"{path.name} -> {track}")
+        print(f"{START}{pathMatch.path.name}{END} -> {START}{pathMatch.title}{END}")
 
-def printFileChangesSummary(fileChanges: list[FileChanges]):
-    '''Prints out summary of changes to be made'''
-    for idx,change in enumerate(fileChanges):
+def displayMatchSummary(pathTitleMatches: list[PathTitleMatch]):
+    '''Display summary of which paths were matched to which titles'''
+    for idx,change in enumerate(pathTitleMatches):
         print(f"{idx + 1} - ", end = '')
-        printFileChange(change)
+        displayPathTitleMatch(change)
 
 QUIT = 'q'
 CANCEL = 's'
@@ -253,44 +272,63 @@ def promptTrackSelect(tracklist: list[str]) -> TrackType:
     else:
         return tracklist[choice - 1]
 
-def promptChanges(fileChanges: list[FileChanges], tracklist: list[str]) -> list[FileChanges]:
+def promptChanges(pathTitleMatches: list[PathTitleMatch], tracklist: list[str]) -> list[PathTitleMatch]:
     '''Prompt user for additional changes'''
     while True:
         try:
             print()
-            printFileChangesSummary(fileChanges)
+            displayMatchSummary(pathTitleMatches)
             print()
-            choice = promptBoundedInteger(PROMPT_SELECT_TRACK_CHANGE, bounds=(1,len(fileChanges)), signal = QUIT_DONE)
+            choice = promptBoundedInteger(PROMPT_SELECT_TRACK_CHANGE, bounds=(1,len(pathTitleMatches)), signal = QUIT_DONE)
 
-            changes = fileChanges[choice - 1]
-            printFileChange(changes)
+            ptm = pathTitleMatches[choice - 1]
+            displayPathTitleMatch(ptm)
 
-            newTrack = promptTrackSelect(tracklist)
-            changes.track = newTrack
-            changes.match = (0,0)
-            printFileChange(changes)
+            newTitle = promptTrackSelect(tracklist)
+            ptm.title = newTitle if newTitle is not None else ''
+            ptm.match = USER_DEF_MATCH
+            displayPathTitleMatch(ptm)
 
         except UserCancel:
             print("Cancelled new track selection")
             continue
 
         except UserDone:
-            return fileChanges
+            return pathTitleMatches
 
-def saveChanges(fileChanges: list[FileChanges], album: AlbumMetadata):
-    '''Save file changes to the filesystem'''
-    for changes in fileChanges:
-        path = changes.path
-        track = changes.track
-        if track is not None:
-            audio = EasyID3(path)
-            audio["artist"] = album.artist
-            audio["albumartist"] = album.artist
-            audio["album"] = album.album
-            track = changes.track
-            audio["title"] = track
-            audio["tracknumber"] = str(album.tracklist.index(track) + 1)
-            audio.save()
+def maybeTrackMetadata(pathMatch: PathTitleMatch, album: AlbumMetadata) -> dict[str,str]|None:
+    '''Determine metadata for a track, if any'''
+    if not pathMatch:
+        return None
+
+    return {
+            "artist" : album.artist,
+            "albumartist" : album.artist,
+            "album" : album.album,
+            "title" : pathMatch.title,
+            "tracknumber" : str(album.tracklist.index(pathMatch.title) + 1),
+            }
+
+def writeMetadata(path: Path, metadata: dict[str,str]) -> None:
+    '''Write metadata from dict to file'''
+    artist = metadata.get("artist")
+    albumartist = metadata.get("albumartist")
+    album = metadata.get("album")
+    title = metadata.get("title")
+    tracknumber = metadata.get("tracknumber")
+
+    audio = EasyID3(path)
+    if artist is not None:
+        audio["artist"] = artist
+    if albumartist is not None:
+        audio["albumartist"] = albumartist
+    if album is not None:
+        audio["album"] = album
+    if title is not None:
+        audio["title"] = title
+    if tracknumber is not None:
+        audio["tracknumber"] = tracknumber
+    audio.save()
 
 def thankyou() -> str:
     '''Say thank you'''
@@ -309,6 +347,8 @@ argParser = ArgumentParser(prog = "Album Metadatiser", description = "Put the me
 argParser.add_argument("input", type = Path)
 
 def main():
+    # NOTICE REMOVE WHEN FIXED
+    print("Notice: title highlighting may not work as intended")
     args = argParser.parse_args()
     albumDataPath: Path = args.input
 
@@ -325,26 +365,36 @@ def main():
 
     audioPaths = Path(".").glob("*.mp3")
 
-    fileChanges: list[FileChanges] = []
+    pathTitleMatches: list[PathTitleMatch] = []
     for path in audioPaths:
-        trackTitle,matchStart,matchLength = identifyTrackFromFilePath(path, album.tracklist)
-        fileChanges.append(FileChanges(path,trackTitle,(matchStart,matchLength)))
+        title,match = identifyTrackFromFilePath(path, album.tracklist)
+        pathTitleMatches.append(
+                PathTitleMatch(path, match, title)
+                if title is not None
+                else PathTitleMatch(path))
 
     try:
-        promptChanges(fileChanges, album.tracklist)
+        promptChanges(pathTitleMatches, album.tracklist)
 
     except UserQuit:
         print("Quitting...")
         print("No changes were made to the files.")
         return
 
-    actualChanges = [change for change in fileChanges if change.track is not None]
-    if len(actualChanges) == 0:
-        print("No changes were made to the files")
-    else:
-        saveChanges(actualChanges, album)
-        print("Changes saved to files!")
+    fnTrackMeta = lambda ptm: maybeTrackMetadata(ptm, album)
+    tracksMetadata = [metadata
+                      for metadata in map(fnTrackMeta, pathTitleMatches)
+                      if metadata is not None]
 
+    if len(tracksMetadata) == 0:
+        print("No changes were made to the files")
+        print(thankyou())
+        return
+
+    for metadata in tracksMetadata:
+        writeMetadata(metadata)
+
+    print("Changes saved to files!")
     print(thankyou())
 
 if __name__ == "__main__":
